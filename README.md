@@ -1,63 +1,63 @@
-# Cilt Lezyonu Sınıflandırma - EfficientNet-B3 + Grad-CAM
+# Skin Lesion Classification - EfficientNet-B3 + Grad-CAM
 
-## Amaç
+## Goal
 
-Bu projede iki temel hedef vardı:
-1. **EfficientNet-B3 fine-tuning**: Önceden eğitilmiş (pretrained) bir EfficientNet-B3 modelini, cilt lezyonu görüntülerini sınıflandıracak şekilde transfer learning ile uyarlamak; training loop ve early stopping mantığını sıfırdan yazarak öğrenmek.
-2. **Grad-CAM ile açıklanabilirlik**: Modelin bir görüntüyü sınıflandırırken hangi bölgeye baktığını görselleştirmek (explainable AI).
+This project had two main objectives:
+1. **EfficientNet-B3 fine-tuning**: adapt a pretrained EfficientNet-B3 model to classify skin lesion images via transfer learning, writing the training loop and early stopping logic from scratch.
+2. **Explainability with Grad-CAM**: visualize which region of an image the model focuses on when making a classification decision.
 
-Veri seti: [HAM10000 (Skin Cancer MNIST)](https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000) - 10.015 dermatoskopik cilt lezyonu görüntüsü, 7 sınıf:
+Dataset: [HAM10000 (Skin Cancer MNIST)](https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000) - 10,015 dermatoscopic skin lesion images across 7 classes:
 
-| Kod | Anlamı |
+| Code | Meaning |
 |---|---|
-| akiec | Aktinik keratoz |
-| bcc | Bazal hücreli karsinom |
-| bkl | Benign keratoz |
-| df | Dermatofibrom |
-| mel | Melanom (kötü huylu, en tehlikeli) |
-| nv | Melanositik nevüs (normal ben) |
-| vasc | Vasküler lezyon |
+| akiec | Actinic keratosis |
+| bcc | Basal cell carcinoma |
+| bkl | Benign keratosis |
+| df | Dermatofibroma |
+| mel | Melanoma (malignant, most dangerous) |
+| nv | Melanocytic nevus (normal mole) |
+| vasc | Vascular lesion |
 
-## Donanım kararı
+## Hardware decision
 
-Yerel makine (Intel i5-13420H, 8GB RAM, dedike GPU yok - sadece Intel UHD Graphics) EfficientNet-B3 fine-tuning için yetersiz bulundu. Bu yüzden:
-- **Kod yazımı ve Grad-CAM/değerlendirme (CPU-yeterli işler)** yerel makinede yapıldı.
-- **Eğitim (training loop çalıştırma, GPU gerektiren kısım)** Google Colab'in ücretsiz T4 GPU'sunda yapıldı.
+The local machine (Intel i5-13420H, 8GB RAM, no dedicated GPU - integrated Intel UHD Graphics only) was found insufficient for EfficientNet-B3 fine-tuning. So:
+- **Code writing and Grad-CAM/evaluation** (CPU-friendly work) was done locally.
+- **Training** (the GPU-heavy part) was run on Google Colab's free T4 GPU.
 
-## Yapılan işler / Yol haritası
+## What was done
 
-1. **Veri hazırlığı** (`src/dataset.py`, `src/transforms.py`, `src/split_data.py`)
-   - HAM10000 metadata'sı okunup PyTorch `Dataset` sınıfına bağlandı.
-   - Train/val/test bölünmesi `lesion_id` bazında yapıldı (aynı lezyonun farklı fotoğraflarının farklı split'lere düşüp veri sızıntısına (data leakage) yol açmasını önlemek için `GroupShuffleSplit` kullanıldı).
-   - Sonuç: train 7002, val 1519, test 1494 görüntü.
-   - Augmentation (random crop, flip, rotation, color jitter) train setine uygulandı.
+1. **Data preparation** (`src/dataset.py`, `src/transforms.py`, `src/split_data.py`)
+   - HAM10000 metadata loaded into a PyTorch `Dataset` class.
+   - Train/val/test split done at the `lesion_id` level (using `GroupShuffleSplit`) to prevent data leakage from different photos of the same lesion ending up in different splits.
+   - Result: 7002 train, 1519 val, 1494 test images.
+   - Augmentation (random crop, flip, rotation, color jitter) applied to the training set.
 
 2. **Model** (`src/model.py`)
-   - `torchvision.models.efficientnet_b3` ImageNet ağırlıklarıyla yüklendi.
-   - Backbone (özellik çıkarıcı gövde) donduruldu, sadece son sınıflandırma katmanı 7 sınıfa göre yeniden tanımlanıp eğitildi.
+   - `torchvision.models.efficientnet_b3` loaded with ImageNet weights.
+   - Backbone frozen, only the final classification layer redefined and trained for the 7 classes.
 
-3. **Sınıf dengesizliği tespiti ve çözümü**
-   - `nv` sınıfı (4718 örnek) ile `df` sınıfı (89 örnek) arasında ~53 kat fark bulundu.
-   - `CrossEntropyLoss`'a `compute_class_weight(class_weight="balanced")` ile hesaplanan ağırlıklar eklendi.
+3. **Class imbalance detection and mitigation**
+   - Found a ~53x gap between the `nv` class (4718 samples) and `df` class (89 samples).
+   - Added class weights via `compute_class_weight(class_weight="balanced")` to `CrossEntropyLoss`.
 
 4. **Training loop + Early Stopping** (`src/train.py`)
-   - Manuel training loop: forward pass -> loss -> backward pass -> optimizer.step().
-   - Early stopping: validation loss 5 epoch üst üste iyileşmezse eğitim durduruluyor, en iyi model (`best_model.pth`) ayrıca kaydediliyor.
-   - Colab'de (`notebooks/train_colab.ipynb`) T4 GPU ile çalıştırıldı, **early stopping epoch 15'te devreye girdi**.
+   - Manual training loop: forward pass -> loss -> backward pass -> optimizer.step().
+   - Early stopping: training halts if validation loss doesn't improve for 5 consecutive epochs; the best model (`best_model.pth`) is saved separately.
+   - Run on Colab (`notebooks/train_colab.ipynb`) with a T4 GPU - **early stopping kicked in at epoch 15**.
 
 5. **Grad-CAM** (`src/grad_cam.py`, `src/run_grad_cam.py`)
-   - PyTorch forward/backward hook'ları kullanılarak sıfırdan (hazır kütüphane kullanılmadan) implement edildi.
-   - Son konvolüsyon katmanının activation'ları ve gradyanları alınıp Global Average Pooling ile kanal önemleri hesaplandı, ısı haritası üretildi.
-   - Her sınıftan örnek görüntüler için ısı haritaları `outputs/grad_cam/` klasörüne kaydedildi.
+   - Implemented from scratch (no third-party library) using PyTorch forward/backward hooks.
+   - Activations and gradients from the last convolutional layer are combined via Global Average Pooling to compute channel importance and produce a heatmap.
+   - Heatmaps for sample images from every class saved to `outputs/grad_cam/`.
 
-6. **Değerlendirme** (`src/evaluate.py`)
-   - Test seti (1494 görüntü) üzerinde confusion matrix ve sınıf bazlı precision/recall/F1 raporu üretildi.
+6. **Evaluation** (`src/evaluate.py`)
+   - Confusion matrix and per-class precision/recall/F1 report generated on the test set (1494 images).
 
-## Sonuçlar
+## Results
 
-**Genel test accuracy: %67.9**
+**Overall test accuracy: 67.9%**
 
-| Sınıf | Precision | Recall | F1 |
+| Class | Precision | Recall | F1 |
 |---|---|---|---|
 | akiec | 0.433 | 0.619 | 0.510 |
 | bcc | 0.464 | 0.574 | 0.513 |
@@ -67,42 +67,42 @@ Yerel makine (Intel i5-13420H, 8GB RAM, dedike GPU yok - sadece Intel UHD Graphi
 | nv | 0.937 | 0.734 | 0.823 |
 | vasc | 0.306 | 0.714 | 0.429 |
 
-Detaylar: `outputs/classification_report.txt`, `outputs/confusion_matrix.png`
+Details: `outputs/classification_report.txt`, `outputs/confusion_matrix.png`
 
-**En kritik bulgu:** `mel` (melanom, kanser) sınıfının recall'u sadece %47.1 - gerçek melanom vakalarının yarısından fazlası kaçırılıyor, bunların 37 tanesi yanlışlıkla "normal ben" (`nv`) olarak sınıflandırılmış. Bu, tıbbi bir uygulamada en tehlikeli hata türlerinden biri ve modelin mevcut haliyle (sadece son katman eğitilmiş, tek fine-tuning turu) production'a hazır olmadığını gösteriyor.
+**Most critical finding:** the `mel` (melanoma, cancer) class recall is only 47.1% - more than half of the actual melanoma cases are missed, 37 of them misclassified as "normal mole" (`nv`). In a medical application this is one of the most dangerous error types, and shows the model in its current form (only the final layer trained, a single fine-tuning pass) is not production-ready.
 
-**Grad-CAM gözlemi:** Belirgin lezyon sınırı olan görüntülerde ısı haritası net şekilde lezyonun üzerine odaklanıyor (model doğru bölgeye bakıyor), yanlış tahmin edilen örneklerde bile bu odaklanma görülüyor - yani hata "rastgele" değil, "ilgili bölgeye bakıp yanlış yorumlama" kaynaklı.
+**Grad-CAM observation:** on images with a clear lesion boundary, the heatmap focuses sharply on the lesion itself (the model looks at the right region) - this holds even on misclassified examples, meaning the error isn't "random" but comes from looking at the right place and misjudging it.
 
-## Olası geliştirmeler (yapılmadı, gelecek için not)
+## Possible improvements (not done, notes for later)
 
-- Backbone'un son bloklarını açıp (unfreeze) düşük learning rate ile ikinci bir fine-tuning turu yapmak.
-- Daha fazla epoch / farklı learning rate ile deneme.
-- Azınlık sınıflar (df, vasc) için oversampling veya ek veri toplama.
+- Unfreeze the last backbone blocks and run a second fine-tuning pass with a low learning rate.
+- Try more epochs / different learning rates.
+- Oversampling or additional data collection for minority classes (df, vasc).
 
-## Proje yapısı
+## Project structure
 
 ```
 src/
-  dataset.py       - PyTorch Dataset sınıfı
-  transforms.py     - Augmentation ve normalize
-  split_data.py     - Train/val/test bölme (lesion_id bazlı)
-  model.py          - EfficientNet-B3 model tanımı
-  train.py          - Training loop + early stopping (yerel test/Colab için)
-  grad_cam.py       - Grad-CAM implementasyonu (hook tabanlı)
-  run_grad_cam.py   - Grad-CAM görselleştirmelerini üretme script'i
-  evaluate.py       - Test seti değerlendirmesi (confusion matrix, classification report)
+  dataset.py       - PyTorch Dataset class
+  transforms.py    - Augmentation and normalization
+  split_data.py    - Train/val/test split (lesion_id-based)
+  model.py         - EfficientNet-B3 model definition
+  train.py         - Training loop + early stopping (for local testing/Colab)
+  grad_cam.py      - Grad-CAM implementation (hook-based)
+  run_grad_cam.py  - Script to generate Grad-CAM visualizations
+  evaluate.py      - Test set evaluation (confusion matrix, classification report)
 notebooks/
-  train_colab.ipynb - Colab'de GPU ile eğitim için notebook
+  train_colab.ipynb - Notebook for GPU training on Colab
 outputs/
-  best_model.pth           - Eğitilmiş model ağırlıkları
-  grad_cam/                - Grad-CAM görselleştirmeleri
+  best_model.pth           - Trained model weights
+  grad_cam/                - Grad-CAM visualizations
   confusion_matrix.png
   classification_report.txt
 ```
 
-## Not
+## Note
 
-`data/` klasöründeki HAM10000 veri seti (~5GB) bu repoya dahil edilmemiştir (`.gitignore`'da hariç tutulmuştur). Yeniden indirmek için:
+The HAM10000 dataset (~5GB) in the `data/` folder is not included in this repo (excluded via `.gitignore`). To download it again:
 ```
 kaggle datasets download -d kmader/skin-cancer-mnist-ham10000
 ```
